@@ -219,7 +219,7 @@ class Pix2Pix_Turbo(torch.nn.Module):
         self.vae.decoder.skip_conv_3.requires_grad_(True)
         self.vae.decoder.skip_conv_4.requires_grad_(True)
 
-    def forward(self, c_t, prompt=None, prompt_tokens=None, deterministic=False, r=1.0, noise_map=None):
+    def forward(self, c_t, prompt=None, prompt_tokens=None, deterministic=False, r=1.0, noise_map=None, first_step=True, training=True):
         # either the prompt or the prompt_tokens should be provided
         assert (prompt is None) != (prompt_tokens is None), "Either prompt or prompt_tokens should be provided"
 
@@ -248,10 +248,16 @@ class Pix2Pix_Turbo(torch.nn.Module):
             encoded_control = self.vae.encode(c_t).latent_dist.sample() * self.vae.config.scaling_factor
             if self.update_forward:
                 encoded_control = einops.rearrange(encoded_control, '(b1 v1) c h w -> b1 v1 c h w', b1=B, v1=V)
-
-            r_max = 0.4
-            r_min = 0.05
-            r = torch.rand(1).cuda() * (r_max - r_min) + r_min
+            
+            if training:
+                r_max = 0.8
+                r_min = 0.5
+                r = torch.rand(1).cuda() * (r_max - r_min) + r_min
+            if first_step and not training:
+                r = 0.25
+            if not first_step and not training:
+                r = 0.05
+            
             
             ####### Only for portrait generation #######
             if self.update_forward:

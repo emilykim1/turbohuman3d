@@ -259,14 +259,14 @@ def main(args):
 
 
                     if global_step < 1000:
-                        l2_weight = 1.0
-                        lpips_weight = 0.05
-                    elif global_step < 3000:
-                        l2_weight = 1.5
-                        lpips_weight = 0.1
-                    else:
                         l2_weight = 2.0
-                        lpips_weight = 0.2
+                        lpips_weight = 0.5
+                    elif global_step < 3000:
+                        l2_weight = 3.0
+                        lpips_weight = 0.6
+                    else:
+                        l2_weight = 4.0
+                        lpips_weight = 0.7
                         
                     arc_weight = 0
                     style_weight = 0   
@@ -344,7 +344,7 @@ def main(args):
                             #     crop_pred += [face_crop_pred]
                                                         
                                 # pred_feat = arcface_model(face_crop_pred)
-                        bbox_norm = [0.35, 0.10, 0.65, 0.40]
+                        bbox_norm = [0.45, 0.20, 0.55, 0.30]
                         face_crop = crop_face_affine(x_tgt_pred[:,1].float(), bbox_norm)
                         face_crop_pred = face_crop.to(dtype=torch.bfloat16)
                         face_crop = crop_face_affine(x_tgt[:,1].float(), bbox_norm)
@@ -472,7 +472,9 @@ def main(args):
                                 assert B == 1, "Use batch size 1 for eval."
                                 with torch.no_grad():
                                     # forward pass
-                                    x_tgt_pred = accelerator.unwrap_model(net_pix2pix)(x_src, prompt=["" for _ in range(B)], deterministic=True)
+                                    x_tgt_pred = accelerator.unwrap_model(net_pix2pix)(x_src, prompt=["" for _ in range(B)], deterministic=True, training=False)
+                                    # x_tgt_pred = accelerator.unwrap_model(net_pix2pix)(x_tgt_pred, prompt=["" for _ in range(B)], deterministic=True, first_step=False, training=False)
+
                                     # compute the reconstruction losses
                                     loss_l2 = F.mse_loss(x_tgt_pred[:, 1].float(), x_tgt[:, 1].float(), reduction="mean")
                                     loss_lpips = net_lpips(x_tgt_pred[:, 1].float(), x_tgt[:, 1].float()).mean()
