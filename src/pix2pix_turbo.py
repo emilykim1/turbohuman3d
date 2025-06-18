@@ -34,7 +34,8 @@ class Pix2Pix_Turbo(torch.nn.Module):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained("stabilityai/sd-turbo", subfolder="tokenizer")
         self.text_encoder = CLIPTextModel.from_pretrained("stabilityai/sd-turbo", subfolder="text_encoder").cuda()
-        self.sched = make_1step_sched()
+        # self.sched = make_1step_sched(n=1)
+        self.sched = make_1step_sched(n=4)
 
         vae = AutoencoderKL.from_pretrained("stabilityai/sd-turbo", subfolder="vae")
         vae.encoder.forward = my_vae_encoder_fwd.__get__(vae.encoder, vae.encoder.__class__)
@@ -182,7 +183,7 @@ class Pix2Pix_Turbo(torch.nn.Module):
         self.vae.encoder.requires_grad_(False)
         ###
         self.vae.decoder.gamma = 1
-        self.timesteps = torch.tensor(random.choice([199]), device="cuda").long() # orig: 699
+        self.timesteps = torch.tensor([700, 500, 300, 100], device="cuda").long() # orig:199
         self.text_encoder.requires_grad_(False)
         self.update_forward = update_forward
         if update_forward:
@@ -250,30 +251,43 @@ class Pix2Pix_Turbo(torch.nn.Module):
                 encoded_control = einops.rearrange(encoded_control, '(b1 v1) c h w -> b1 v1 c h w', b1=B, v1=V)
             
             if training:
-                r_max = 0.8
-                r_min = 0.5
+                r_max = 0.5
+                r_min = 0.2
                 r = torch.rand(1).cuda() * (r_max - r_min) + r_min
             if first_step and not training:
-                r = 0.25
+                r = 0.15
             if not first_step and not training:
                 r = 0.05
             
             
             ####### Only for portrait generation #######
             if self.update_forward:
+                t = random.choice(self.timesteps)
+                noise_map = torch.randn_like(encoded_control[:, 1, :, :, :]).cuda()
+                encoded_control[:, 1, :, :, :] = self.sched.add_noise(encoded_control[:, 1, :, :, :], noise_map, t)
+                pred_noise = self.unet(encoded_control, t, encoder_hidden_states=caption_enc,).sample
+                loss_noise = torch.nn.functional.mse_loss(pred_noise[:, 1, :, :, :], noise_map)
+                
+                # with torch.no_grad():
+                x_denoised = self.sched.step(pred_noise, t, encoded_control, return_dict=True).prev_sample
+                x_denoised = x_denoised.to(pred_noise.dtype)
+                # encoded_control[:, 1, :, :, :] = encoded_control[:, 1, :, :, :] * (1 - r) + noise_map * r
+                # for t in self.timesteps:
+                #     model_pred = self.unet(encoded_control, t, encoder_hidden_states=caption_enc,).sample
+                #     latent = self.sched.step(model_pred, t, latent, return_dict=True).prev_sample
+                
                 # r = random.choice([0.1])
                 # noise_map = torch.randn_like(encoded_control[:, :-1, :, :, :]).cuda()
                 # encoded_control[:, :1, :, :, :] = encoded_control[:, :-1, :, :, :] * (1 - r) + noise_map * r
-                noise_map = torch.randn_like(encoded_control[:, 1, :, :, :]).cuda()
-                encoded_control[:, 1, :, :, :] = encoded_control[:, 1, :, :, :] * (1 - r) + noise_map * r
-                model_pred = self.unet(encoded_control, self.timesteps, encoder_hidden_states=caption_enc,).sample
+                
+                # model_pred = self.unet(encoded_control, self.timesteps, encoder_hidden_states=caption_enc,).sample
             else:
                 ##### For video #####
                 noise_map = torch.randn_like(encoded_control).cuda()
                 encoded_control = encoded_control * (1 - r) + noise_map * r
                 model_pred = self.unet(encoded_control, self.timesteps, encoder_hidden_states=cond_tokens,).sample
-            x_denoised = self.sched.step(model_pred, self.timesteps, encoded_control, return_dict=True).prev_sample
-            x_denoised = x_denoised.to(model_pred.dtype)
+                x_denoised = self.sched.step(model_pred, self.timesteps, encoded_control, return_dict=True).prev_sample
+                x_denoised = x_denoised.to(model_pred.dtype)
             self.vae.decoder.incoming_skip_acts = self.vae.encoder.current_down_blocks
             if self.update_forward:
                 x_denoised = einops.rearrange(x_denoised, 'b v c h w -> (b v) c h w')
@@ -299,7 +313,7 @@ class Pix2Pix_Turbo(torch.nn.Module):
             self.vae.decoder.incoming_skip_acts = self.vae.encoder.current_down_blocks
             self.vae.decoder.gamma = r
             output_image = (self.vae.decode(x_denoised / self.vae.config.scaling_factor).sample).clamp(-1, 1)
-        return output_image
+        return output_image, loss_noise
 
     def save_model(self, outf):
         sd = {}

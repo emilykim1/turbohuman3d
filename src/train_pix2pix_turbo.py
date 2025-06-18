@@ -12,7 +12,7 @@ from accelerate.utils import set_seed
 from PIL import Image
 from torchvision import transforms
 from tqdm.auto import tqdm
-from mmpretrain import get_model
+# from mmpretrain import get_model
 import torchvision.models as models
 import einops
 
@@ -286,13 +286,15 @@ def main(args):
                     torch.cuda.empty_cache()
                     # print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
                     # print(f"Reserved : {torch.cuda.memory_reserved()  / 1024**2:.2f} MB")
-                    x_tgt_pred = net_pix2pix(x_src, prompt=["" for _ in range(B)], deterministic=True) # prompt_tokens=batch["input_ids"]
+                    x_tgt_pred, loss_l2 = net_pix2pix(x_src, prompt=["" for _ in range(B)], deterministic=True) # prompt_tokens=batch["input_ids"]
+                    # x_tgt_pred = x_src + x_tgt_pred_diff
+                    
                     # Reconstruction loss
                     # loss_l2 = F.mse_loss(x_tgt_pred[:, :-1].reshape(B*(V-1), C, H, W).float(), x_tgt[:, :-1].reshape(B*(V-1), C, H, W).float(), reduction="mean") * args.lambda_l2
                     # loss_lpips = net_lpips(x_tgt_pred[:, :-1].reshape(B*(V-1), C, H, W).float(), x_tgt[:, :-1].reshape(B*(V-1), C, H, W).float()).mean() * args.lambda_lpips
                     
-                    loss_l2 = F.mse_loss(x_tgt_pred[:, 1].reshape(B, C, H, W).float(), x_tgt[:, 1].reshape(B, C, H, W).float(), reduction="mean")  
-                    loss_lpips = net_lpips(x_tgt_pred[:, 1].reshape(B, C, H, W).float(), x_tgt[:, 1].reshape(B, C, H, W).float()).mean() 
+                    loss_l2 = F.mse_loss(x_tgt_pred[:, 1].reshape(B, C, H, W).float(), (x_tgt[:, 1] - x_src[:,1]).reshape(B, C, H, W).float(), reduction="mean")  
+                    loss_lpips = net_lpips(x_tgt_pred[:, 1].reshape(B, C, H, W).float(), (x_tgt[:, 1] - x_src[:,1]).reshape(B, C, H, W).float()).mean() 
                     
                     # diff = F.mse_loss(x_tgt[:, 0].reshape(B, C, H, W).float(), x_tgt[:, 1].reshape(B, C, H, W).float(), reduction="mean") 
                     # diff_pred = F.mse_loss(x_tgt_pred[:, 0].reshape(B, C, H, W).float(), x_tgt[:, 1].reshape(B, C, H, W).float(), reduction="mean") 
@@ -396,7 +398,7 @@ def main(args):
                     """
                     Generator loss: fool the discriminator
                     """
-                    x_tgt_pred = net_pix2pix(x_src, prompt=["" for _ in range(B)], deterministic=True)
+                    x_tgt_pred, _ = net_pix2pix(x_src, prompt=["" for _ in range(B)], deterministic=True)
                     lossG = net_disc(x_tgt_pred[:,1].reshape(B, C, H, W), for_G=True).mean() * args.lambda_gan
                     accelerator.backward(lossG)
                     if accelerator.sync_gradients:
@@ -472,11 +474,11 @@ def main(args):
                                 assert B == 1, "Use batch size 1 for eval."
                                 with torch.no_grad():
                                     # forward pass
-                                    x_tgt_pred = accelerator.unwrap_model(net_pix2pix)(x_src, prompt=["" for _ in range(B)], deterministic=True, training=False)
-                                    # x_tgt_pred = accelerator.unwrap_model(net_pix2pix)(x_tgt_pred, prompt=["" for _ in range(B)], deterministic=True, first_step=False, training=False)
-
+                                    x_tgt_pred, loss_l2 = accelerator.unwrap_model(net_pix2pix)(x_src, prompt=["" for _ in range(B)], deterministic=True, training=False)
+                                    # x_tgt_pred = x_src + x_tgt_pred_diff
+                                    
                                     # compute the reconstruction losses
-                                    loss_l2 = F.mse_loss(x_tgt_pred[:, 1].float(), x_tgt[:, 1].float(), reduction="mean")
+                                    # loss_l2 = F.mse_loss(x_tgt_pred[:, 1].float(), x_tgt[:, 1].float(), reduction="mean")
                                     loss_lpips = net_lpips(x_tgt_pred[:, 1].float(), x_tgt[:, 1].float()).mean()
                                     # compute clip similarity loss
                                     # x_tgt_pred_renorm = t_clip_renorm(x_tgt_pred * 0.5 + 0.5).reshape(B*V, C, H, W)
