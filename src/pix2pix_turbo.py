@@ -262,20 +262,24 @@ class Pix2Pix_Turbo(torch.nn.Module):
             
             ####### Only for portrait generation #######
             if self.update_forward:
-                t = random.choice(self.timesteps)
-                noise_map = torch.randn_like(encoded_control[:, 1, :, :, :]).cuda()
-                encoded_control[:, 1, :, :, :] = self.sched.add_noise(encoded_control[:, 1, :, :, :], noise_map, t)
-                pred_noise = self.unet(encoded_control, t, encoder_hidden_states=caption_enc,).sample
-                loss_noise = torch.nn.functional.mse_loss(pred_noise[:, 1, :, :, :], noise_map)
-                
+                if training:
+                    t = random.choice(self.timesteps)
+                    noise_map = torch.randn_like(encoded_control[:, 1, :, :, :]).cuda()
+                    encoded_control[:, 1, :, :, :] = self.sched.add_noise(encoded_control[:, 1, :, :, :], noise_map, t)
+                    pred_noise = self.unet(encoded_control, t, encoder_hidden_states=caption_enc,).sample
+                    loss_noise = torch.nn.functional.mse_loss(pred_noise[:, 1, :, :, :], noise_map)
                 # with torch.no_grad():
-                x_denoised = self.sched.step(pred_noise, t, encoded_control, return_dict=True).prev_sample
-                x_denoised = x_denoised.to(pred_noise.dtype)
-                # encoded_control[:, 1, :, :, :] = encoded_control[:, 1, :, :, :] * (1 - r) + noise_map * r
-                # for t in self.timesteps:
-                #     model_pred = self.unet(encoded_control, t, encoder_hidden_states=caption_enc,).sample
-                #     latent = self.sched.step(model_pred, t, latent, return_dict=True).prev_sample
                 
+                    x_denoised = self.sched.step(pred_noise, t, encoded_control, return_dict=True).prev_sample
+                    x_denoised = x_denoised.to(pred_noise.dtype)
+                # encoded_control[:, 1, :, :, :] = encoded_control[:, 1, :, :, :] * (1 - r) + noise_map * r
+                else:
+                    noise_map = torch.randn_like(encoded_control[:, 1, :, :, :]).cuda()
+                    encoded_control[:, 1, :, :, :] = self.sched.add_noise(encoded_control[:, 1, :, :, :], noise_map, self.timesteps[[0]])
+                    for t in self.timesteps:
+                        pred_noise = self.unet(encoded_control, t, encoder_hidden_states=caption_enc,).sample
+                        encoded_control = self.sched.step(pred_noise, t, encoded_control, return_dict=True).prev_sample
+                    x_denoised = encoded_control.to(pred_noise.dtype)
                 # r = random.choice([0.1])
                 # noise_map = torch.randn_like(encoded_control[:, :-1, :, :, :]).cuda()
                 # encoded_control[:, :1, :, :, :] = encoded_control[:, :-1, :, :, :] * (1 - r) + noise_map * r
@@ -313,7 +317,10 @@ class Pix2Pix_Turbo(torch.nn.Module):
             self.vae.decoder.incoming_skip_acts = self.vae.encoder.current_down_blocks
             self.vae.decoder.gamma = r
             output_image = (self.vae.decode(x_denoised / self.vae.config.scaling_factor).sample).clamp(-1, 1)
-        return output_image, loss_noise
+        if training:
+            return output_image, loss_noise
+        else:
+            return output_image
 
     def save_model(self, outf):
         sd = {}

@@ -419,13 +419,15 @@ def main(args):
                     lr_scheduler_disc.step()
                     optimizer_disc.zero_grad(set_to_none=args.set_grads_to_none)
                     # fake image
-                    lossD_fake = net_disc(x_tgt_pred[:,1].detach().reshape(B, C, H, W), for_real=False).mean() * args.lambda_gan
-                    accelerator.backward(lossD_fake.mean())
+                    lossD_fake1 = net_disc(x_tgt_pred[:,1].detach().reshape(B, C, H, W), for_real=False).mean() * args.lambda_gan
+                    accelerator.backward(lossD_fake1.mean())
+                    lossD_fake2 = net_disc(x_src[:,1].detach().reshape(B, C, H, W), for_real=False).mean() * args.lambda_gan
+                    accelerator.backward(lossD_fake2.mean())
                     if accelerator.sync_gradients:
                         accelerator.clip_grad_norm_(net_disc.parameters(), args.max_grad_norm)
                     optimizer_disc.step()
                     optimizer_disc.zero_grad(set_to_none=args.set_grads_to_none)
-                    lossD = lossD_real + lossD_fake
+                    lossD = lossD_real + lossD_fake1 + lossD_fake2
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
@@ -474,11 +476,11 @@ def main(args):
                                 assert B == 1, "Use batch size 1 for eval."
                                 with torch.no_grad():
                                     # forward pass
-                                    x_tgt_pred, loss_l2 = accelerator.unwrap_model(net_pix2pix)(x_src, prompt=["" for _ in range(B)], deterministic=True, training=False)
+                                    x_tgt_pred = accelerator.unwrap_model(net_pix2pix)(x_src, prompt=["" for _ in range(B)], deterministic=True, training=False)
                                     # x_tgt_pred = x_src + x_tgt_pred_diff
                                     
                                     # compute the reconstruction losses
-                                    # loss_l2 = F.mse_loss(x_tgt_pred[:, 1].float(), x_tgt[:, 1].float(), reduction="mean")
+                                    loss_l2 = F.mse_loss(x_tgt_pred[:, 1].float(), x_tgt[:, 1].float(), reduction="mean")
                                     loss_lpips = net_lpips(x_tgt_pred[:, 1].float(), x_tgt[:, 1].float()).mean()
                                     # compute clip similarity loss
                                     # x_tgt_pred_renorm = t_clip_renorm(x_tgt_pred * 0.5 + 0.5).reshape(B*V, C, H, W)
