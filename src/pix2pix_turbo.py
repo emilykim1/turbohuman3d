@@ -183,7 +183,7 @@ class Pix2Pix_Turbo(torch.nn.Module):
         self.vae.encoder.requires_grad_(False)
         ###
         self.vae.decoder.gamma = 1
-        self.timesteps = torch.tensor([700, 500, 300, 100], device="cuda").long() # orig:199
+        self.timesteps = torch.tensor([750, 500, 250], device="cuda").long() # orig:199
         self.text_encoder.requires_grad_(False)
         self.update_forward = update_forward
         if update_forward:
@@ -220,7 +220,7 @@ class Pix2Pix_Turbo(torch.nn.Module):
         self.vae.decoder.skip_conv_3.requires_grad_(True)
         self.vae.decoder.skip_conv_4.requires_grad_(True)
 
-    def forward(self, c_t, prompt=None, prompt_tokens=None, deterministic=False, r=1.0, noise_map=None, first_step=True, training=True):
+    def forward(self, c_t, prompt=None, prompt_tokens=None, deterministic=False, r=1.0, noise_map=None, first_step=True, training=True, t_ind=0):
         # either the prompt or the prompt_tokens should be provided
         assert (prompt is None) != (prompt_tokens is None), "Either prompt or prompt_tokens should be provided"
 
@@ -245,8 +245,11 @@ class Pix2Pix_Turbo(torch.nn.Module):
 
                 cond_tokens = torch.cat([ref_tokens, kp_tokens], dim=1)
                 cond_tokens = self.cond_proj(cond_tokens)                
-
-            encoded_control = self.vae.encode(c_t).latent_dist.sample() * self.vae.config.scaling_factor
+            
+            if t_ind == 0:
+                encoded_control = self.vae.encode(c_t).latent_dist.sample() * self.vae.config.scaling_factor
+            else:
+                encoded_control = c_t
             if self.update_forward:
                 encoded_control = einops.rearrange(encoded_control, '(b1 v1) c h w -> b1 v1 c h w', b1=B, v1=V)
             
@@ -263,7 +266,8 @@ class Pix2Pix_Turbo(torch.nn.Module):
             ####### Only for portrait generation #######
             if self.update_forward:
                 if training:
-                    t = random.choice(self.timesteps)
+                    # t = random.choice(self.timesteps)
+                    t = self.timesteps[t_ind]
                     noise_map = torch.randn_like(encoded_control[:, 1, :, :, :]).cuda()
                     encoded_control[:, 1, :, :, :] = self.sched.add_noise(encoded_control[:, 1, :, :, :], noise_map, t)
                     pred_noise = self.unet(encoded_control, t, encoder_hidden_states=caption_enc,).sample
@@ -292,6 +296,8 @@ class Pix2Pix_Turbo(torch.nn.Module):
                 model_pred = self.unet(encoded_control, self.timesteps, encoder_hidden_states=cond_tokens,).sample
                 x_denoised = self.sched.step(model_pred, self.timesteps, encoded_control, return_dict=True).prev_sample
                 x_denoised = x_denoised.to(model_pred.dtype)
+            if training and t_ind < len(self.timesteps) - 1:
+                return x_denoised, loss_noise
             self.vae.decoder.incoming_skip_acts = self.vae.encoder.current_down_blocks
             if self.update_forward:
                 x_denoised = einops.rearrange(x_denoised, 'b v c h w -> (b v) c h w')
@@ -318,7 +324,10 @@ class Pix2Pix_Turbo(torch.nn.Module):
             self.vae.decoder.gamma = r
             output_image = (self.vae.decode(x_denoised / self.vae.config.scaling_factor).sample).clamp(-1, 1)
         if training:
-            return output_image, loss_noise
+            if t_ind == len(self.timesteps) - 1:
+                return output_image, loss_noise
+            else:
+                return x_denoised, loss_noise
         else:
             return output_image
 

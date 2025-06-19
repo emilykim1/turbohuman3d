@@ -260,41 +260,47 @@ def main(args):
 
                     if global_step < 1000:
                         l2_weight = 2.0
-                        lpips_weight = 0.5
+                        lpips_weight = 1.0
                     elif global_step < 3000:
                         l2_weight = 3.0
-                        lpips_weight = 0.6
+                        lpips_weight = 1.3
                     else:
                         l2_weight = 4.0
-                        lpips_weight = 0.7
+                        lpips_weight = 1.5
                         
                     arc_weight = 0
                     style_weight = 0   
                     if step > 0:
-                        arc_weight = 0.3
+                        arc_weight = 0.8
                         style_weight = 1.5
 
                     if step > 5000:
-                        arc_weight = 0.4  # identity matters more now
+                        arc_weight = 0.9  # identity matters more now
                         style_weight = 2.0
 
                     if step > 10000:
-                        arc_weight = 0.5
+                        arc_weight = 1.0
                         style_weight = 2.0
 
                     # forward pass
                     torch.cuda.empty_cache()
                     # print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
                     # print(f"Reserved : {torch.cuda.memory_reserved()  / 1024**2:.2f} MB")
-                    x_tgt_pred, loss_l2 = net_pix2pix(x_src, prompt=["" for _ in range(B)], deterministic=True) # prompt_tokens=batch["input_ids"]
+                    loss_noise = []
+                    x_tgt_pred = x_src
+                    for i in range(3):
+                        x_tgt_pred, loss_noise_i = net_pix2pix(x_tgt_pred, prompt=["" for _ in range(B)], deterministic=True, t_ind=i) # prompt_tokens=batch["input_ids"]
+                        loss_noise += [loss_noise_i]
+                        del loss_noise_i
+                    loss_noise = sum(loss_noise)
                     # x_tgt_pred = x_src + x_tgt_pred_diff
                     
                     # Reconstruction loss
                     # loss_l2 = F.mse_loss(x_tgt_pred[:, :-1].reshape(B*(V-1), C, H, W).float(), x_tgt[:, :-1].reshape(B*(V-1), C, H, W).float(), reduction="mean") * args.lambda_l2
                     # loss_lpips = net_lpips(x_tgt_pred[:, :-1].reshape(B*(V-1), C, H, W).float(), x_tgt[:, :-1].reshape(B*(V-1), C, H, W).float()).mean() * args.lambda_lpips
                     
-                    loss_l2 = F.mse_loss(x_tgt_pred[:, 1].reshape(B, C, H, W).float(), (x_tgt[:, 1] - x_src[:,1]).reshape(B, C, H, W).float(), reduction="mean")  
-                    loss_lpips = net_lpips(x_tgt_pred[:, 1].reshape(B, C, H, W).float(), (x_tgt[:, 1] - x_src[:,1]).reshape(B, C, H, W).float()).mean() 
+                    loss_l2 = F.mse_loss(x_tgt_pred[:, 1].reshape(B, C, H, W).float(), x_tgt[:,1].reshape(B, C, H, W).float(), reduction="mean")  
+                    loss_lpips = net_lpips(x_tgt_pred[:, 1].reshape(B, C, H, W).float(), x_tgt[:,1].reshape(B, C, H, W).float()).mean() 
                     
                     # diff = F.mse_loss(x_tgt[:, 0].reshape(B, C, H, W).float(), x_tgt[:, 1].reshape(B, C, H, W).float(), reduction="mean") 
                     # diff_pred = F.mse_loss(x_tgt_pred[:, 0].reshape(B, C, H, W).float(), x_tgt[:, 1].reshape(B, C, H, W).float(), reduction="mean") 
@@ -371,7 +377,7 @@ def main(args):
                     # if step < 1000:
                     #     loss = loss_l2 #+ loss_lpips + style_loss + loss_arc #+ loss_face #+ loss_arc
                     # else:
-                    loss = loss_l2 * l2_weight + loss_lpips * lpips_weight + style_loss * style_weight + loss_arc * arc_weight + loss_face * lpips_weight
+                    loss = loss_l2 * l2_weight + loss_lpips * lpips_weight + style_loss * style_weight + loss_arc * arc_weight + loss_face * lpips_weight + loss_noise
 
                     if global_step % args.eval_freq == 1:
                         os.makedirs(os.path.join(args.output_dir, "train", f"fid_{global_step}"), exist_ok=True)
@@ -388,7 +394,7 @@ def main(args):
                     #     clipsim, _ = net_clip(x_tgt_pred_renorm, caption_tokens)
                     #     loss_clipsim = (1 - clipsim.mean() / 100)
                     #     loss += loss_clipsim * args.lambda_clipsim
-                    accelerator.backward(loss, retain_graph=False)
+                    accelerator.backward(loss, retain_graph=True)
                     if accelerator.sync_gradients:
                         accelerator.clip_grad_norm_(layers_to_opt, args.max_grad_norm)
                     optimizer.step()
@@ -398,7 +404,11 @@ def main(args):
                     """
                     Generator loss: fool the discriminator
                     """
-                    x_tgt_pred, _ = net_pix2pix(x_src, prompt=["" for _ in range(B)], deterministic=True)
+                    for i in range(3):
+                        x_tgt_pred, _ = net_pix2pix(x_tgt_pred, prompt=["" for _ in range(B)], deterministic=True, t_ind=i) # prompt_tokens=batch["input_ids"]
+                        # loss_noise += [loss_noise_i]
+                    # loss_noise = sum(loss_noise)
+                    # x_tgt_pred, _ = net_pix2pix(x_src, prompt=["" for _ in range(B)], deterministic=True)
                     lossG = net_disc(x_tgt_pred[:,1].reshape(B, C, H, W), for_G=True).mean() * args.lambda_gan
                     accelerator.backward(lossG)
                     if accelerator.sync_gradients:
@@ -444,6 +454,7 @@ def main(args):
                         logs["loss_style"] = style_loss.detach().item()
                         logs["loss_arc"] = loss_arc.detach().item()
                         logs["loss_face"] = loss_face.detach().item()
+                        logs["loss_noise"] = loss_noise.detach().item()
                         # if args.lambda_clipsim > 0:
                         #     logs["loss_clipsim"] = loss_clipsim.detach().item()
                         progress_bar.set_postfix(**logs)
